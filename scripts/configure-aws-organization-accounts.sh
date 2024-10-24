@@ -38,29 +38,72 @@ get_root_id() {
     echo "ROOT_ID obtained: $ROOT_ID"
 }
 
-# Function to deploy the CloudFormation stack
-deploy_stack() {
-    echo "Deploying the CloudFormation stack..."
-    aws cloudformation create-stack \
-        --stack-name OpenGovernance-Deploy \
-        --template-body file://AWSOrganizationDeployment.yml \
-        --capabilities CAPABILITY_NAMED_IAM \
-        --parameters ParameterKey=OrganizationUnitList,ParameterValue=$ROOT_ID
-    if [ $? -ne 0 ]; then
-        echo "Failed to create the CloudFormation stack."
-        exit 1
+# Function to check if the CloudFormation stack exists
+stack_exists() {
+    aws cloudformation describe-stacks --stack-name OpenGovernance-Deploy &> /dev/null
+    if [ $? -eq 0 ]; then
+        return 0  # Stack exists
+    else
+        return 1  # Stack does not exist
     fi
 }
 
-# Function to wait until the stack status is CREATE_COMPLETE
-wait_for_stack_completion() {
-    echo "Waiting for the CloudFormation stack to reach CREATE_COMPLETE status..."
-    aws cloudformation wait stack-create-complete --stack-name OpenGovernance-Deploy
-    if [ $? -ne 0 ]; then
-        echo "CloudFormation stack creation failed or timed out."
-        exit 1
+# Function to deploy or update the CloudFormation stack
+deploy_stack() {
+    echo "Deploying the CloudFormation stack..."
+    if stack_exists; then
+        echo "Stack exists. Updating the existing stack..."
+        aws cloudformation update-stack \
+            --stack-name OpenGovernance-Deploy \
+            --template-body file://AWSOrganizationDeployment.yml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameters ParameterKey=OrganizationUnitList,ParameterValue=$ROOT_ID
+        if [ $? -ne 0 ]; then
+            echo "Failed to update the CloudFormation stack."
+            exit 1
+        fi
+        ACTION="update"
+    else
+        echo "Stack does not exist. Creating a new stack..."
+        aws cloudformation create-stack \
+            --stack-name OpenGovernance-Deploy \
+            --template-body file://AWSOrganizationDeployment.yml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameters ParameterKey=OrganizationUnitList,ParameterValue=$ROOT_ID
+        if [ $? -ne 0 ]; then
+            echo "Failed to create the CloudFormation stack."
+            exit 1
+        fi
+        ACTION="create"
     fi
-    echo "CloudFormation stack has been successfully created."
+}
+
+# Function to wait until the stack status is COMPLETE
+wait_for_stack_completion() {
+    if [ "$ACTION" == "create" ]; then
+        echo "Waiting for the CloudFormation stack to reach CREATE_COMPLETE status..."
+        aws cloudformation wait stack-create-complete --stack-name OpenGovernance-Deploy
+        if [ $? -ne 0 ]; then
+            echo "CloudFormation stack creation failed or timed out."
+            exit 1
+        fi
+        echo "CloudFormation stack has been successfully created."
+    elif [ "$ACTION" == "update" ]; then
+        echo "Waiting for the CloudFormation stack to reach UPDATE_COMPLETE status..."
+        aws cloudformation wait stack-update-complete --stack-name OpenGovernance-Deploy
+        if [ $? -ne 0 ]; then
+            # Check if the error is due to no updates being necessary
+            OUTPUT=$(aws cloudformation describe-stacks --stack-name OpenGovernance-Deploy 2>&1)
+            if echo "$OUTPUT" | grep -q "No updates are to be performed"; then
+                echo "No updates are to be performed."
+            else
+                echo "CloudFormation stack update failed or timed out."
+                exit 1
+            fi
+        else
+            echo "CloudFormation stack has been successfully updated."
+        fi
+    fi
 }
 
 # Function to retrieve the IAM username from the CloudFormation stack outputs
